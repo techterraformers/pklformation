@@ -2,11 +2,11 @@ mod commands;
 
 use std::path::PathBuf;
 
+use crate::commands::up_command::UpCommand;
 use aws_config::BehaviorVersion;
 use clap::{Parser, Subcommand};
+use std::time::Duration;
 use tracing::{span, Level};
-
-use crate::commands::up_command::UpCommand;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -22,6 +22,8 @@ enum Commands {
         stack: String,
         #[arg(short, long)]
         template: PathBuf,
+        #[arg(short, long, default_value = "30", value_parser = parse_duration)]
+        pool_interval: Duration,
     },
 
     Preview {
@@ -40,6 +42,11 @@ enum Commands {
     },
 }
 
+fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
+    let seconds = arg.parse()?;
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
 #[::tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -55,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Up {
             stack,
             template,
+            pool_interval,
         } => {
             span!(
                 Level::INFO,
@@ -62,9 +70,14 @@ async fn main() -> anyhow::Result<()> {
                 stack = stack,
                 template = template.to_str()
             );
-            UpCommand::new(client, stack.to_string(), template.to_path_buf())
-                .run()
-                .await?;
+            UpCommand::new(
+                client,
+                stack.to_string(),
+                template.to_path_buf(),
+                pool_interval.to_owned(),
+            )
+            .run()
+            .await?;
         }
         Commands::Preview { stack } => {
             span!(Level::INFO, "preview", stack = stack);
