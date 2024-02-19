@@ -1,0 +1,5 @@
+amends "pkl:Project"
+
+dependencies {
+  ["cloudformation"] { uri = "package://github.com/techterraformers/pkl-aws-cloudformation/releases/download/1.0.0/aws-cloudformation@1.0.0" }
+}

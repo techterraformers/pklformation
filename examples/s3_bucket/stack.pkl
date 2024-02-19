@@ -1,0 +1,7 @@
+amends "@cloudformation/cloudformation.pkl"
+
+Resources {
+    ["MyBucket"] = new `AWS::S3::Bucket` {
+        Properties {BucketName = "my-bucket"}
+    }
+}

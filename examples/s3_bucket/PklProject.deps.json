@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "resolvedDependencies": {
+    "package://github.com/techterraformers/pkl-aws-cloudformation/releases/download/1.0.0/aws-cloudformation@1": {
+      "type": "remote",
+      "uri": "projectpackage://github.com/techterraformers/pkl-aws-cloudformation/releases/download/1.0.0/aws-cloudformation@1.0.0",
+      "checksums": {
+        "sha256": "5578b09f4f74231c27c771a9444a031ff4d265b26ddc488172e486c2e9a62240"
+      }
+    }
+  }
+}
