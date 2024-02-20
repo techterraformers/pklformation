@@ -1,10 +1,10 @@
-use anyhow::{anyhow, bail, Context};
+use anyhow::{bail, Context};
 
 use spinners::{Spinner, Spinners};
 
 use aws_sdk_cloudformation::{
-    operation::{describe_change_set::DescribeChangeSetOutput, execute_change_set},
-    types::{ChangeAction, ChangeSetSummary, ChangeSetType, ExecutionStatus, StackStatus},
+    operation::describe_change_set::{self, DescribeChangeSetOutput},
+    types::{ChangeAction, ChangeSetType, ChangeType, StackStatus},
     Client,
 };
 use chrono::Utc;
@@ -26,8 +26,8 @@ pub struct UpCommand {
     pool_interval: Duration,
 }
 
-fn ask_confirm(msg: &str) -> bool {
-    println!("{}", msg);
+fn ask_confirm() -> bool {
+    println!("Do you want procede [y/N]?");
     let mut input = [0];
     io::stdin().read_exact(&mut input).unwrap();
     match input[0] as char {
@@ -75,7 +75,7 @@ async fn stack_status(client: &Client, stack_name: &str) -> anyhow::Result<(Stac
 }
 
 fn print_change_set(change_set: &DescribeChangeSetOutput) {
-    println!("The following changes will performed to the stack:");
+    println!("The following changes will performed to the stack");
     println!(
         "Stack: {}",
         change_set.stack_name.as_deref().unwrap_or("UNKOWN STACK")
@@ -87,13 +87,12 @@ fn print_change_set(change_set: &DescribeChangeSetOutput) {
             .as_deref()
             .unwrap_or("UNKOWN CHANGE SET")
     );
-
-    dbg!(change_set);
+    dbg!change_set);
 
     change_set
         .changes()
         .iter()
-        .filter_map(|c| c.resource_change.as_ref())
+        .filter_map(|c| c.resource_change())
         .for_each(|rc| {
             let header = format!(
                 "{}: {} ",
@@ -128,13 +127,13 @@ async fn create_or_update(
         .template_body(template)
         .send()
         .await?;
-    debug!("Create change set: {changeset:?}");
+    debug!("Create change set {changeset:?}");
     info!("Change set {change_set_name} created!");
 
     let change_set_description = describe_change_set(client, stack_name, &change_set_name).await?;
     print_change_set(&change_set_description);
 
-    if ask_confirm("Do you want continue?[y/N]") {
+    if ask_confirm() {
         info!("Apply change set {change_set_name}!");
         let execution_result = client
             .execute_change_set()
@@ -207,73 +206,6 @@ async fn wait_until_op_in_progress(
     }
 
     Ok((status, reason))
-}
-
-async fn pending_change_set(
-    client: &Client,
-    stack_name: &str,
-) -> anyhow::Result<Option<ChangeSetSummary>> {
-    let list_change_set = client
-        .list_change_sets()
-        .stack_name(stack_name)
-        .send()
-        .await?;
-    Ok(list_change_set
-        .summaries()
-        .iter()
-        .find(|cs| matches!(cs.execution_status, Some(ExecutionStatus::Available)))
-        .cloned())
-}
-
-async fn continue_pending_change_set(
-    client: &Client,
-    stack_name: &str,
-    template: &str,
-    pool_interval: Duration,
-) -> anyhow::Result<()> {
-    print!("Found a pending change set:");
-    let pending_change_set = pending_change_set(client, stack_name)
-        .await?
-        .ok_or(anyhow!("Pending change set not found"))?;
-    let pending_change_set_description = describe_change_set(
-        client,
-        stack_name,
-        pending_change_set
-            .change_set_name
-            .as_deref()
-            .unwrap_or_default(),
-    )
-    .await?;
-    print_change_set(&pending_change_set_description);
-    if ask_confirm("Do you want apply this change set? [y/N]") {
-        let execution_result = client
-            .execute_change_set()
-            .change_set_name(
-                pending_change_set
-                    .change_set_id
-                    .context("Empty changeset ID")?,
-            )
-            .send()
-            .await?;
-        wait_until_op_in_progress(client, stack_name, pool_interval).await?;
-        //todo: handle response
-    } else {
-        if ask_confirm("Do you want delete this change set? [y/N]") {
-            let delete_change_set_result = client
-                .delete_change_set()
-                .change_set_name(
-                    pending_change_set
-                        .change_set_id
-                        .context("Empty changeset ID")?,
-                )
-                .send()
-                .await?;
-            wait_until_op_in_progress(client, stack_name, pool_interval).await?;
-            //todo: handle response
-        }
-    }
-
-    Ok(())
 }
 
 impl UpCommand {

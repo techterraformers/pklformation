@@ -53,10 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
     let client = aws_sdk_cloudformation::Client::new(&config);
 
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .try_init()
-        .unwrap();
+    tracing_subscriber::fmt().init();
 
     match &cli.command {
         Commands::Up {
@@ -64,12 +61,13 @@ async fn main() -> anyhow::Result<()> {
             template,
             pool_interval,
         } => {
-            span!(
+            let span = span!(
                 Level::INFO,
                 "up",
                 stack = stack,
                 template = template.to_str()
             );
+            let _enter = span.enter();
             UpCommand::new(
                 client,
                 stack.to_string(),
@@ -80,16 +78,16 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Commands::Preview { stack } => {
-            span!(Level::INFO, "preview", stack = stack);
+            span!(Level::DEBUG, "preview", stack = stack);
         }
         Commands::Destroy { stack } => {
-            span!(Level::INFO, "destroy", stack = stack);
+            span!(Level::DEBUG, "destroy", stack = stack);
         }
         Commands::List {} => {
-            span!(Level::INFO, "list");
+            span!(Level::DEBUG, "list");
         }
         Commands::Describe { stack } => {
-            span!(Level::INFO, "describe", stack = stack);
+            span!(Level::DEBUG, "describe", stack = stack);
         }
     }
 
