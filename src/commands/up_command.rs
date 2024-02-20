@@ -188,7 +188,7 @@ impl UpCommand {
         if wait_result.is_err() {
             create_or_update(&self.client, &self.stack, &template, ChangeSetType::Create).await?;
         } else {
-            let (last_status, _reason) = wait_result?;
+            let (last_status, reason) = wait_result?;
             match last_status {
                 StackStatus::DeleteComplete => {
                     create_or_update(&self.client, &self.stack, &template, ChangeSetType::Create)
@@ -201,13 +201,13 @@ impl UpCommand {
                     create_or_update(&self.client, &self.stack, &template, ChangeSetType::Update)
                         .await?;
                 }
-                StackStatus::CreateFailed
-                | StackStatus::RollbackComplete
-                | StackStatus::ImportRollbackComplete
-                | StackStatus::RollbackFailed => {
+                StackStatus::CreateFailed | StackStatus::RollbackComplete => {
                     recreate(&self.client, &self.stack, &template, self.pool_interval).await?;
                 }
-                _ => bail!("Unknow status: Check the AWS Console"),
+                _ => {
+                    tracing::error!("Up failed with status: {last_status:?}, reason: {reason:?}. Check the AWS Console");
+                    return Ok(());
+                }
             }
         }
 
