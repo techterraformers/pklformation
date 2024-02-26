@@ -35,7 +35,7 @@ impl UpCommand {
     pub async fn run(self) -> anyhow::Result<()> {
         let wait_result = self
             .client
-            .wait_until_op_in_progress(&self.stack, self.pool_interval)
+            .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
             .await;
 
         if wait_result.is_err() {
@@ -67,7 +67,7 @@ impl UpCommand {
 
         let (op_status, reason) = self
             .client
-            .wait_until_op_in_progress(&self.stack, self.pool_interval)
+            .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
             .await?;
 
         match op_status {
@@ -106,6 +106,9 @@ impl UpCommand {
             .create_or_update_change_set(&self.stack, &template, change_set_type)
             .await?;
         let change_set_id = change_set.id().context("Empty change set id")?;
+        self.client
+            .wait_until_change_set_op_in_progress(&change_set_id, self.pool_interval)
+            .await?;
         let change_set_description = self.client.describe_change_set(change_set_id).await?;
         print_change_set(&change_set_description);
 
@@ -114,6 +117,9 @@ impl UpCommand {
         } else {
             self.client.delete_change_set(change_set_id).await?;
         }
+        self.client
+            .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
+            .await?;
 
         Ok(())
     }
@@ -125,7 +131,7 @@ impl UpCommand {
             self.client.delete(&self.stack).await?;
             let _ = self
                 .client
-                .wait_until_op_in_progress(&self.stack, self.pool_interval)
+                .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
                 .await;
             self.create_or_update(ChangeSetType::Create).await?;
             info!("Stack {} re-created!", self.stack);
@@ -149,8 +155,14 @@ impl UpCommand {
         print_change_set(&pending_change_set_description);
         if ask_confirm("Do you want to apply this change set?") {
             self.client.execute_change_set(change_set_id).await?;
+            self.client
+                .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
+                .await?;
         } else if ask_confirm("Do you want to delete this change set?") {
             self.client.delete_change_set(change_set_id).await?;
+            self.client
+                .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
+                .await?;
         }
 
         Ok(())

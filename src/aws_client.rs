@@ -6,7 +6,7 @@ use aws_sdk_cloudformation::{
     operation::{
         create_change_set::CreateChangeSetOutput, describe_change_set::DescribeChangeSetOutput,
     },
-    types::{ChangeSetSummary, ChangeSetType, ExecutionStatus, StackStatus},
+    types::{ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, StackStatus},
     Client,
 };
 use chrono::Utc;
@@ -39,6 +39,24 @@ impl AwsClient {
         Ok(describe_change_set)
     }
 
+    pub async fn change_set_status(
+        &self,
+        change_set_id: &str,
+    ) -> anyhow::Result<(ChangeSetStatus, String)> {
+        let describe_change_set_output = self.describe_change_set(change_set_id).await?;
+        Ok((
+            describe_change_set_output
+                .status
+                .as_ref()
+                .context("Stack without status")?
+                .clone(),
+            describe_change_set_output
+                .status_reason()
+                .unwrap_or("Unknown reason")
+                .to_owned(),
+        ))
+    }
+
     pub async fn delete_change_set(&self, change_set_id: &str) -> anyhow::Result<()> {
         let delete_change_set_result = self
             .inner
@@ -46,7 +64,7 @@ impl AwsClient {
             .change_set_name(change_set_id)
             .send()
             .await?;
-        debug!("Delete Change set result: {:?}", &delete_change_set_result);
+        debug!("Delete Change set resul: {:?}", &delete_change_set_result);
         Ok(())
     }
 
@@ -124,7 +142,7 @@ impl AwsClient {
         Ok(())
     }
 
-    fn op_in_progres(status: &StackStatus) -> bool {
+    fn stack_op_in_progres(status: &StackStatus) -> bool {
         matches!(
             status,
             StackStatus::CreateInProgress
@@ -139,19 +157,51 @@ impl AwsClient {
         )
     }
 
-    pub async fn wait_until_op_in_progress(
+    fn change_set_op_in_progres(status: &ChangeSetStatus) -> bool {
+        matches!(
+            status,
+            ChangeSetStatus::CreateInProgress
+                | ChangeSetStatus::CreatePending
+                | ChangeSetStatus::DeleteInProgress
+                | ChangeSetStatus::DeletePending
+        )
+    }
+
+    pub async fn wait_until_stack_op_in_progress(
         &self,
         stack_name: &str,
         pool_interval: Duration,
     ) -> anyhow::Result<(StackStatus, String)> {
         let (status, reason) = self.stack_status(stack_name).await?;
 
-        if Self::op_in_progres(&status) {
+        if Self::stack_op_in_progres(&status) {
             let mut sp = Spinner::new(Spinners::Dots9, format!("Waiting for {status:?}"));
             loop {
                 let (status, reason) = self.stack_status(stack_name).await?;
                 thread::sleep(pool_interval);
-                if !Self::op_in_progres(&status) {
+                if !Self::stack_op_in_progres(&status) {
+                    sp.stop();
+                    return Ok((status, reason));
+                }
+            }
+        }
+
+        Ok((status, reason))
+    }
+
+    pub async fn wait_until_change_set_op_in_progress(
+        &self,
+        change_set_id: &str,
+        pool_interval: Duration,
+    ) -> anyhow::Result<(ChangeSetStatus, String)> {
+        let (status, reason) = self.change_set_status(change_set_id).await?;
+
+        if Self::change_set_op_in_progres(&status) {
+            let mut sp = Spinner::new(Spinners::Dots9, format!("Waiting for {status:?}"));
+            loop {
+                let (status, reason) = self.change_set_status(change_set_id).await?;
+                thread::sleep(pool_interval);
+                if !Self::change_set_op_in_progres(&status) {
                     sp.stop();
                     return Ok((status, reason));
                 }
@@ -171,6 +221,7 @@ impl AwsClient {
             .stack_name(stack_name)
             .send()
             .await?;
+        dbg!(&list_change_set);
         Ok(list_change_set
             .summaries()
             .iter()
