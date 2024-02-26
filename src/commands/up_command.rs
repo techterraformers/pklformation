@@ -1,283 +1,29 @@
 use anyhow::{anyhow, bail, Context};
 
-use spinners::{Spinner, Spinners};
+use aws_sdk_cloudformation::types::{ChangeSetType, StackStatus};
 
-use aws_sdk_cloudformation::{
-    operation::{describe_change_set::DescribeChangeSetOutput, execute_change_set},
-    types::{ChangeAction, ChangeSetSummary, ChangeSetType, ExecutionStatus, StackStatus},
-    Client,
-};
-use chrono::Utc;
-use colored::Colorize;
-use core::str;
-use std::{
-    io::{self, Read},
-    path::PathBuf,
-    process::Command,
-    thread,
-    time::Duration,
-};
+use std::{path::PathBuf, process::Command, time::Duration};
 use tracing::{debug, info};
 
+use crate::{
+    aws_client::AwsClient,
+    display::{ask_confirm, print_change_set},
+};
+
 pub struct UpCommand {
-    client: Client,
+    client: AwsClient,
     stack: String,
     template: PathBuf,
     pool_interval: Duration,
 }
 
-fn ask_confirm(msg: &str) -> bool {
-    println!("{}", msg);
-    let mut input = [0];
-    io::stdin().read_exact(&mut input).unwrap();
-    match input[0] as char {
-        'y' | 'Y' => true,
-        'n' | 'N' => false,
-        _ => false,
-    }
-}
-
-async fn describe_change_set(
-    client: &Client,
-    stack_name: &str,
-    change_set_name: &str,
-) -> anyhow::Result<DescribeChangeSetOutput> {
-    let describe_change_set = client
-        .describe_change_set()
-        .stack_name(stack_name)
-        .change_set_name(change_set_name)
-        .send()
-        .await?;
-    debug!("Change set desription: {:?}", &describe_change_set);
-    Ok(describe_change_set)
-}
-
-async fn stack_status(client: &Client, stack_name: &str) -> anyhow::Result<(StackStatus, String)> {
-    let describe_stacks_output = client
-        .describe_stacks()
-        .stack_name(stack_name)
-        .send()
-        .await?;
-    let stacks = describe_stacks_output.stacks.context("No stacks list")?;
-    let stack = stacks.first().context("Empty stacks list")?;
-
-    Ok((
-        stack
-            .stack_status
-            .as_ref()
-            .context("Stack without status")?
-            .clone(),
-        stack
-            .stack_status_reason()
-            .unwrap_or("Unknown reason")
-            .to_owned(),
-    ))
-}
-
-fn print_change_set(change_set: &DescribeChangeSetOutput) {
-    println!("The following changes will performed to the stack:");
-    println!(
-        "Stack: {}",
-        change_set.stack_name.as_deref().unwrap_or("UNKOWN STACK")
-    );
-    println!(
-        "Change set: {}",
-        change_set
-            .change_set_name
-            .as_deref()
-            .unwrap_or("UNKOWN CHANGE SET")
-    );
-
-    dbg!(change_set);
-
-    change_set
-        .changes()
-        .iter()
-        .filter_map(|c| c.resource_change.as_ref())
-        .for_each(|rc| {
-            let header = format!(
-                "{}: {} ",
-                rc.resource_type.as_deref().unwrap_or("UNKNOW RESURCE TYPE"),
-                rc.logical_resource_id
-                    .as_deref()
-                    .unwrap_or("UNKNOW RESOUCE LOGICAL ID")
-            );
-            match rc.action.as_ref().unwrap() {
-                ChangeAction::Add => println!("{} {}", "+".green(), header.green()),
-                ChangeAction::Modify => println!("{} {}", "~".yellow(), header.yellow()),
-                ChangeAction::Remove => println!("{} {}", "-".red(), header.red()),
-                _ => println!("? {}", "Unknown Change Type".purple()),
-            }
-        })
-}
-
-async fn create_or_update(
-    client: &Client,
-    stack_name: &str,
-    template: &str,
-    change_set_type: ChangeSetType,
-) -> anyhow::Result<()> {
-    info!("{change_set_type:?} stack {stack_name}...");
-    let change_set_name = format!("{}-{}", stack_name, Utc::now().format("%Y%m%d-%H%M%S-%f"));
-    info!("Create change set {change_set_name}...");
-    let changeset = client
-        .create_change_set()
-        .stack_name(stack_name)
-        .change_set_name(change_set_name.clone())
-        .change_set_type(change_set_type)
-        .template_body(template)
-        .send()
-        .await?;
-    debug!("Create change set: {changeset:?}");
-    info!("Change set {change_set_name} created!");
-
-    let change_set_description = describe_change_set(client, stack_name, &change_set_name).await?;
-    print_change_set(&change_set_description);
-
-    if ask_confirm("Do you want continue?[y/N]") {
-        info!("Apply change set {change_set_name}!");
-        let execution_result = client
-            .execute_change_set()
-            .change_set_name(changeset.id.context("Empty changeset ID")?)
-            .send()
-            .await?;
-
-        debug!("Execution result: {execution_result:?}");
-        info!("Change Set {change_set_name} applied!");
-    }
-
-    Ok(())
-}
-
-async fn delete(client: &Client, stack_name: &str) -> anyhow::Result<()> {
-    info!("Delete stack {stack_name}...");
-    let deletation_result = client.delete_stack().stack_name(stack_name).send().await?;
-    debug!("Deletation result: {deletation_result:?}");
-
-    info!("Stack {stack_name} deleted!");
-    Ok(())
-}
-async fn recreate(
-    client: &Client,
-    stack_name: &str,
-    template: &str,
-    pool_interval: Duration,
-) -> anyhow::Result<()> {
-    info!("Re-create stack {stack_name}...");
-    delete(client, stack_name).await?;
-    let _ = wait_until_op_in_progress(client, stack_name, pool_interval).await;
-    create_or_update(client, stack_name, template, ChangeSetType::Create).await?;
-    info!("Stack {stack_name} re-created!");
-    Ok(())
-}
-
-fn op_in_progres(status: &StackStatus) -> bool {
-    matches!(
-        status,
-        StackStatus::CreateInProgress
-            | StackStatus::DeleteInProgress
-            | StackStatus::ImportInProgress
-            | StackStatus::ImportRollbackInProgress
-            | StackStatus::ReviewInProgress
-            | StackStatus::RollbackInProgress
-            | StackStatus::UpdateCompleteCleanupInProgress
-            | StackStatus::UpdateInProgress
-            | StackStatus::UpdateRollbackCompleteCleanupInProgress
-            | StackStatus::UpdateRollbackInProgress
-    )
-}
-
-async fn wait_until_op_in_progress(
-    client: &Client,
-    stack_name: &str,
-    pool_interval: Duration,
-) -> anyhow::Result<(StackStatus, String)> {
-    let (status, reason) = stack_status(client, stack_name).await?;
-
-    if op_in_progres(&status) {
-        let mut sp = Spinner::new(Spinners::Dots9, format!("Waiting for {status:?}"));
-        loop {
-            let (status, reason) = stack_status(client, stack_name).await?;
-            thread::sleep(pool_interval);
-            if !op_in_progres(&status) {
-                sp.stop();
-                return Ok((status, reason));
-            }
-        }
-    }
-
-    Ok((status, reason))
-}
-
-async fn pending_change_set(
-    client: &Client,
-    stack_name: &str,
-) -> anyhow::Result<Option<ChangeSetSummary>> {
-    let list_change_set = client
-        .list_change_sets()
-        .stack_name(stack_name)
-        .send()
-        .await?;
-    Ok(list_change_set
-        .summaries()
-        .iter()
-        .find(|cs| matches!(cs.execution_status, Some(ExecutionStatus::Available)))
-        .cloned())
-}
-
-async fn continue_pending_change_set(
-    client: &Client,
-    stack_name: &str,
-    template: &str,
-    pool_interval: Duration,
-) -> anyhow::Result<()> {
-    print!("Found a pending change set:");
-    let pending_change_set = pending_change_set(client, stack_name)
-        .await?
-        .ok_or(anyhow!("Pending change set not found"))?;
-    let pending_change_set_description = describe_change_set(
-        client,
-        stack_name,
-        pending_change_set
-            .change_set_name
-            .as_deref()
-            .unwrap_or_default(),
-    )
-    .await?;
-    print_change_set(&pending_change_set_description);
-    if ask_confirm("Do you want apply this change set? [y/N]") {
-        let execution_result = client
-            .execute_change_set()
-            .change_set_name(
-                pending_change_set
-                    .change_set_id
-                    .context("Empty changeset ID")?,
-            )
-            .send()
-            .await?;
-        wait_until_op_in_progress(client, stack_name, pool_interval).await?;
-        //todo: handle response
-    } else {
-        if ask_confirm("Do you want delete this change set? [y/N]") {
-            let delete_change_set_result = client
-                .delete_change_set()
-                .change_set_name(
-                    pending_change_set
-                        .change_set_id
-                        .context("Empty changeset ID")?,
-                )
-                .send()
-                .await?;
-            wait_until_op_in_progress(client, stack_name, pool_interval).await?;
-            //todo: handle response
-        }
-    }
-
-    Ok(())
-}
-
 impl UpCommand {
-    pub fn new(client: Client, stack: String, template: PathBuf, pool_interval: Duration) -> Self {
+    pub fn new(
+        client: AwsClient,
+        stack: String,
+        template: PathBuf,
+        pool_interval: Duration,
+    ) -> Self {
         Self {
             client,
             stack,
@@ -287,6 +33,53 @@ impl UpCommand {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        let wait_result = self
+            .client
+            .wait_until_op_in_progress(&self.stack, self.pool_interval)
+            .await;
+
+        if wait_result.is_err() {
+            self.create_or_update(ChangeSetType::Create).await?;
+        } else {
+            let (last_status, reason) = wait_result?;
+            match last_status {
+                StackStatus::DeleteComplete => {
+                    self.create_or_update(ChangeSetType::Create).await?;
+                }
+                StackStatus::CreateComplete
+                | StackStatus::ImportComplete
+                | StackStatus::UpdateComplete
+                | StackStatus::UpdateRollbackComplete => {
+                    self.create_or_update(ChangeSetType::Update).await?;
+                }
+                StackStatus::CreateFailed | StackStatus::RollbackComplete => {
+                    self.recreate().await?;
+                }
+                StackStatus::ReviewInProgress => {
+                    self.continue_pending_change_set().await?;
+                }
+                _ => {
+                    tracing::error!("Up failed with status: {last_status:?}, reason: {reason:?}. Check the AWS Console");
+                    return Ok(());
+                }
+            }
+        }
+
+        let (op_status, reason) = self
+            .client
+            .wait_until_op_in_progress(&self.stack, self.pool_interval)
+            .await?;
+
+        match op_status {
+            StackStatus::CreateComplete | StackStatus::UpdateComplete => {
+                info!("Up compleated successfully!")
+            }
+            _ => tracing::error!("Up failed with status: {op_status:?}, reason: {reason:?}"),
+        }
+        Ok(())
+    }
+
+    pub async fn eval_template(&self) -> anyhow::Result<String> {
         let template_eval_result = Command::new("pkl")
             .args([
                 "eval",
@@ -303,46 +96,63 @@ impl UpCommand {
             bail!(String::from_utf8(template_eval_result.stderr)?);
         }
 
-        let template = String::from_utf8(template_eval_result.stdout)?;
+        Ok(String::from_utf8(template_eval_result.stdout)?)
+    }
 
-        let wait_result =
-            wait_until_op_in_progress(&self.client, &self.stack, self.pool_interval).await;
+    async fn create_or_update(&self, change_set_type: ChangeSetType) -> anyhow::Result<()> {
+        let template = self.eval_template().await?;
+        let change_set = self
+            .client
+            .create_or_update_change_set(&self.stack, &template, change_set_type)
+            .await?;
+        let change_set_id = change_set.id().context("Empty change set id")?;
+        let change_set_description = self.client.describe_change_set(change_set_id).await?;
+        print_change_set(&change_set_description);
 
-        if wait_result.is_err() {
-            create_or_update(&self.client, &self.stack, &template, ChangeSetType::Create).await?;
+        if ask_confirm("Do you want to continue?") {
+            self.client.execute_change_set(change_set_id).await?;
         } else {
-            let (last_status, reason) = wait_result?;
-            match last_status {
-                StackStatus::DeleteComplete => {
-                    create_or_update(&self.client, &self.stack, &template, ChangeSetType::Create)
-                        .await?;
-                }
-                StackStatus::CreateComplete
-                | StackStatus::ImportComplete
-                | StackStatus::UpdateComplete
-                | StackStatus::UpdateRollbackComplete => {
-                    create_or_update(&self.client, &self.stack, &template, ChangeSetType::Update)
-                        .await?;
-                }
-                StackStatus::CreateFailed | StackStatus::RollbackComplete => {
-                    recreate(&self.client, &self.stack, &template, self.pool_interval).await?;
-                }
-                _ => {
-                    tracing::error!("Up failed with status: {last_status:?}, reason: {reason:?}. Check the AWS Console");
-                    return Ok(());
-                }
-            }
+            self.client.delete_change_set(change_set_id).await?;
         }
 
-        let (op_status, reason) =
-            wait_until_op_in_progress(&self.client, &self.stack, self.pool_interval).await?;
+        Ok(())
+    }
 
-        match op_status {
-            StackStatus::CreateComplete | StackStatus::UpdateComplete => {
-                info!("Up compleated successfully!")
-            }
-            _ => tracing::error!("Up failed with status: {op_status:?}, reason: {reason:?}"),
+    async fn recreate(&self) -> anyhow::Result<()> {
+        info!("Past creation of the {} failed", self.stack);
+        if ask_confirm("Do you want to re-create the stack?") {
+            info!("Re-create stack {}...", self.stack);
+            self.client.delete(&self.stack).await?;
+            let _ = self
+                .client
+                .wait_until_op_in_progress(&self.stack, self.pool_interval)
+                .await;
+            self.create_or_update(ChangeSetType::Create).await?;
+            info!("Stack {} re-created!", self.stack);
         }
+        Ok(())
+    }
+
+    async fn continue_pending_change_set(&self) -> anyhow::Result<()> {
+        print!("Found a pending change set:");
+        let pending_change_set = self
+            .client
+            .pending_change_set(&self.stack)
+            .await?
+            .ok_or(anyhow!("Pending change set not found"))?;
+
+        let change_set_id = pending_change_set
+            .change_set_id
+            .as_deref()
+            .context("Empty change set id")?;
+        let pending_change_set_description = self.client.describe_change_set(change_set_id).await?;
+        print_change_set(&pending_change_set_description);
+        if ask_confirm("Do you want to apply this change set?") {
+            self.client.execute_change_set(change_set_id).await?;
+        } else if ask_confirm("Do you want to delete this change set?") {
+            self.client.delete_change_set(change_set_id).await?;
+        }
+
         Ok(())
     }
 }

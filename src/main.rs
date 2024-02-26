@@ -1,9 +1,11 @@
+mod aws_client;
 mod commands;
+mod display;
 
 use std::path::PathBuf;
 
 use crate::commands::up_command::UpCommand;
-use aws_config::BehaviorVersion;
+
 use clap::{Parser, Subcommand};
 use std::time::Duration;
 use tracing::{span, Level};
@@ -50,8 +52,7 @@ fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntEr
 #[::tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    let client = aws_sdk_cloudformation::Client::new(&config);
+    let client = aws_client::AwsClient::new().await;
 
     tracing_subscriber::fmt().init();
 
