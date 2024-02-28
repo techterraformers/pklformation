@@ -1,13 +1,17 @@
 use anyhow::{anyhow, bail, Context};
 
-use aws_sdk_cloudformation::types::{ChangeSetType, StackStatus};
+use aws_sdk_cloudformation::types::{ChangeSetStatus, ChangeSetType, ResourceStatus, StackStatus};
 
-use std::{path::PathBuf, process::Command, time::Duration};
+use std::{
+    path::PathBuf,
+    process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tracing::{debug, info};
 
 use crate::{
     aws_client::AwsClient,
-    display::{ask_confirm, print_change_set},
+    display::{ask_confirm, print_change_set, print_resources_errors},
 };
 
 pub struct UpCommand {
@@ -38,6 +42,7 @@ impl UpCommand {
             .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
             .await;
 
+        let start_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs_f64();
         if wait_result.is_err() {
             self.create_or_update(ChangeSetType::Create).await?;
         } else {
@@ -65,7 +70,7 @@ impl UpCommand {
             }
         }
 
-        let (op_status, reason) = self
+        let (op_status, _reason) = self
             .client
             .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
             .await?;
@@ -74,7 +79,18 @@ impl UpCommand {
             StackStatus::CreateComplete | StackStatus::UpdateComplete => {
                 info!("Up compleated successfully!")
             }
-            _ => tracing::error!("Up failed with status: {op_status:?}, reason: {reason:?}"),
+            _ => {
+                tracing::error!("Up failed with status: {op_status:?}");
+                let events = self
+                    .client
+                    .describe_stack_events(&self.stack)
+                    .await?
+                    .into_iter()
+                    .filter(|p| {
+                        p.timestamp().map(|t| t.as_secs_f64()).unwrap_or_default() > start_time
+                    });
+                print_resources_errors(events);
+            }
         }
         Ok(())
     }
@@ -100,6 +116,7 @@ impl UpCommand {
     }
 
     async fn create_or_update(&self, change_set_type: ChangeSetType) -> anyhow::Result<()> {
+        info!("Create stack {} ...", self.stack);
         let template = self.eval_template().await?;
         let change_set = self
             .client
@@ -125,17 +142,18 @@ impl UpCommand {
     }
 
     async fn recreate(&self) -> anyhow::Result<()> {
-        info!("Past creation of the {} failed", self.stack);
-        if ask_confirm("Do you want to re-create the stack?") {
-            info!("Re-create stack {}...", self.stack);
-            self.client.delete(&self.stack).await?;
-            let _ = self
-                .client
-                .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
-                .await;
-            self.create_or_update(ChangeSetType::Create).await?;
-            info!("Stack {} re-created!", self.stack);
-        }
+        info!(
+            "Past creation of the stack {} failed, re-create stack...",
+            self.stack
+        );
+        info!("Re-create stack {}...", self.stack);
+        self.client.delete(&self.stack).await?;
+        let _ = self
+            .client
+            .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
+            .await;
+        self.create_or_update(ChangeSetType::Create).await?;
+        info!("Stack {} re-created!", self.stack);
         Ok(())
     }
 
@@ -158,11 +176,21 @@ impl UpCommand {
             self.client
                 .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
                 .await?;
-        } else if ask_confirm("Do you want to delete this change set?") {
+        } else if ask_confirm("Do you want to create a new change set?") {
             self.client.delete_change_set(change_set_id).await?;
-            self.client
+            let (status, reason) = self
+                .client
                 .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
                 .await?;
+            if status == ChangeSetStatus::DeleteComplete {
+                self.create_or_update(ChangeSetType::Update).await?;
+            } else {
+                bail!(
+                    "Unable to delete the change set {}: {}",
+                    change_set_id,
+                    reason
+                );
+            }
         }
 
         Ok(())

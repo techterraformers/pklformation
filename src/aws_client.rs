@@ -5,8 +5,9 @@ use aws_config::BehaviorVersion;
 use aws_sdk_cloudformation::{
     operation::{
         create_change_set::CreateChangeSetOutput, describe_change_set::DescribeChangeSetOutput,
+        describe_stack_events::DescribeStackEventsOutput,
     },
-    types::{ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, StackStatus},
+    types::{ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, StackEvent, StackStatus},
     Client,
 };
 use chrono::Utc;
@@ -126,6 +127,25 @@ impl AwsClient {
         debug!("Execution result: {execution_result:?}");
         info!("Change Set {change_set_id} applied!");
         Ok(())
+    }
+
+    pub async fn describe_stack_events(
+        &self,
+        stack: &str,
+    ) -> anyhow::Result<Vec<StackEvent>> {
+        info!("Describe stack events {stack}!",);
+        let stack_events: Vec<_> = self
+            .inner
+            .describe_stack_events()
+            .stack_name(stack)
+            .into_paginator()
+            .items()
+            .send()
+            .collect::<Result<Vec<_>,_>>()
+            .await?;
+
+        debug!("Describe stack events result: {stack_events:?}");
+        Ok(stack_events)
     }
 
     pub async fn delete(&self, stack_name: &str) -> anyhow::Result<()> {
