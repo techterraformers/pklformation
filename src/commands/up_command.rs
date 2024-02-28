@@ -9,16 +9,14 @@ use std::{
 };
 use tracing::{debug, info};
 
-use crate::{
-    aws_client::AwsClient,
-    display::{ask_confirm, print_change_set, print_resources_errors},
-};
+use crate::{aws_client::AwsClient, display::Display};
 
 pub struct UpCommand {
     client: AwsClient,
     stack: String,
     template: PathBuf,
     pool_interval: Duration,
+    display: Display,
 }
 
 impl UpCommand {
@@ -33,6 +31,7 @@ impl UpCommand {
             stack,
             template,
             pool_interval,
+            display: Display::new(),
         }
     }
 
@@ -89,7 +88,7 @@ impl UpCommand {
                     .filter(|p| {
                         p.timestamp().map(|t| t.as_secs_f64()).unwrap_or_default() > start_time
                     });
-                print_resources_errors(events);
+                self.display.print_resources_errors(events);
             }
         }
         Ok(())
@@ -127,9 +126,9 @@ impl UpCommand {
             .wait_until_change_set_op_in_progress(&change_set_id, self.pool_interval)
             .await?;
         let change_set_description = self.client.describe_change_set(change_set_id).await?;
-        print_change_set(&change_set_description);
+        self.display.print_change_set(&change_set_description);
 
-        if ask_confirm("Do you want to continue?") {
+        if self.display.ask_confirm("Do you want to continue?") {
             self.client.execute_change_set(change_set_id).await?;
         } else {
             self.client.delete_change_set(change_set_id).await?;
@@ -170,13 +169,20 @@ impl UpCommand {
             .as_deref()
             .context("Empty change set id")?;
         let pending_change_set_description = self.client.describe_change_set(change_set_id).await?;
-        print_change_set(&pending_change_set_description);
-        if ask_confirm("Do you want to apply this change set?") {
+        self.display
+            .print_change_set(&pending_change_set_description);
+        if self
+            .display
+            .ask_confirm("Do you want to apply this change set?")
+        {
             self.client.execute_change_set(change_set_id).await?;
             self.client
                 .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
                 .await?;
-        } else if ask_confirm("Do you want to create a new change set?") {
+        } else if self
+            .display
+            .ask_confirm("Do you want to create a new change set?")
+        {
             self.client.delete_change_set(change_set_id).await?;
             let (status, reason) = self
                 .client
