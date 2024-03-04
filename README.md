@@ -7,10 +7,10 @@ pklformation leverages the capabilities of Pkl, a language designed for simplici
 ## Features
 * Create AWS CloudFormation templates using the Pkl language.
 * Utilize variables, functions, and other Pkl features to enhance productivity.
-* Seamlessly integrate PKLFormation into your AWS CloudFormation workflow.
+* Seamlessly integrate `pklformation` into your AWS CloudFormation workflow.
 
 ## Requirements 
-Before using pklformation, ensure that `pkl` is installed on your system. If you haven't installed `pkl` CLI yet, you can follow the installation guide available [here](https://pkl-lang.org/main/current/pkl-cli/index.html#installation).
+Before using `pklformation`, ensure that `pkl` is installed on your system. If you haven't installed `pkl` CLI yet, you can follow the installation guide available [here](https://pkl-lang.org/main/current/pkl-cli/index.html#installation).
 
 ## Build
 you can build `pklformation`:
