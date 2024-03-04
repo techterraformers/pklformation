@@ -5,7 +5,6 @@ use aws_config::BehaviorVersion;
 use aws_sdk_cloudformation::{
     operation::{
         create_change_set::CreateChangeSetOutput, describe_change_set::DescribeChangeSetOutput,
-        describe_stack_events::DescribeStackEventsOutput,
     },
     types::{ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, StackEvent, StackStatus},
     Client,
@@ -111,7 +110,7 @@ impl AwsClient {
             .send()
             .await?;
 
-        info!("{change_set_type:?} stack {stack_name} done!");
+        info!("{change_set_type:?} change set {stack_name} done!");
         Ok(changeset)
     }
 
@@ -148,7 +147,7 @@ impl AwsClient {
         Ok(stack_events)
     }
 
-    pub async fn delete(&self, stack_name: &str) -> anyhow::Result<()> {
+    pub async fn delete_stack(&self, stack_name: &str) -> anyhow::Result<()> {
         info!("Delete stack {stack_name}...");
         let deletation_result = self
             .inner
@@ -241,7 +240,6 @@ impl AwsClient {
             .stack_name(stack_name)
             .send()
             .await?;
-        dbg!(&list_change_set);
         Ok(list_change_set
             .summaries()
             .iter()

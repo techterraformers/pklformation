@@ -2,7 +2,6 @@ use aws_sdk_cloudformation::{
     operation::describe_change_set::DescribeChangeSetOutput,
     types::{
         ChangeAction, ChangeSetStatus, Replacement, RequiresRecreation, ResourceStatus, StackEvent,
-        StackStatus,
     },
 };
 use colored::Colorize;
@@ -36,34 +35,34 @@ enum TextColor {
 }
 
 impl TextColor {
-    pub fn from_stack_status(stack_status: &StackStatus) -> Self {
-        match stack_status {
-            StackStatus::CreateComplete => TextColor::Green,
-            StackStatus::CreateFailed => TextColor::Red,
-            StackStatus::CreateInProgress => TextColor::Yellow,
-            StackStatus::DeleteComplete => TextColor::Green,
-            StackStatus::DeleteFailed => TextColor::Red,
-            StackStatus::DeleteInProgress => TextColor::Yellow,
-            StackStatus::ImportComplete => TextColor::Green,
-            StackStatus::ImportInProgress => TextColor::Yellow,
-            StackStatus::ImportRollbackComplete => TextColor::Green,
-            StackStatus::ImportRollbackFailed => TextColor::Red,
-            StackStatus::ImportRollbackInProgress => TextColor::Yellow,
-            StackStatus::ReviewInProgress => TextColor::Yellow,
-            StackStatus::RollbackComplete => TextColor::Green,
-            StackStatus::RollbackFailed => TextColor::Red,
-            StackStatus::RollbackInProgress => TextColor::Yellow,
-            StackStatus::UpdateComplete => TextColor::Green,
-            StackStatus::UpdateCompleteCleanupInProgress => TextColor::Green,
-            StackStatus::UpdateFailed => TextColor::Red,
-            StackStatus::UpdateInProgress => TextColor::Yellow,
-            StackStatus::UpdateRollbackComplete => TextColor::Green,
-            StackStatus::UpdateRollbackCompleteCleanupInProgress => TextColor::Yellow,
-            StackStatus::UpdateRollbackFailed => TextColor::Red,
-            StackStatus::UpdateRollbackInProgress => TextColor::Yellow,
-            _ => TextColor::Red,
-        }
-    }
+   // pub fn from_stack_status(stack_status: &StackStatus) -> Self {
+   //     match stack_status {
+   //         StackStatus::CreateComplete => TextColor::Green,
+   //         StackStatus::CreateFailed => TextColor::Red,
+   //         StackStatus::CreateInProgress => TextColor::Yellow,
+   //         StackStatus::DeleteComplete => TextColor::Green,
+   //         StackStatus::DeleteFailed => TextColor::Red,
+   //         StackStatus::DeleteInProgress => TextColor::Yellow,
+   //         StackStatus::ImportComplete => TextColor::Green,
+   //         StackStatus::ImportInProgress => TextColor::Yellow,
+   //         StackStatus::ImportRollbackComplete => TextColor::Green,
+   //         StackStatus::ImportRollbackFailed => TextColor::Red,
+   //         StackStatus::ImportRollbackInProgress => TextColor::Yellow,
+   //         StackStatus::ReviewInProgress => TextColor::Yellow,
+   //         StackStatus::RollbackComplete => TextColor::Green,
+   //         StackStatus::RollbackFailed => TextColor::Red,
+   //         StackStatus::RollbackInProgress => TextColor::Yellow,
+   //         StackStatus::UpdateComplete => TextColor::Green,
+   //         StackStatus::UpdateCompleteCleanupInProgress => TextColor::Green,
+   //         StackStatus::UpdateFailed => TextColor::Red,
+   //         StackStatus::UpdateInProgress => TextColor::Yellow,
+   //         StackStatus::UpdateRollbackComplete => TextColor::Green,
+   //         StackStatus::UpdateRollbackCompleteCleanupInProgress => TextColor::Yellow,
+   //         StackStatus::UpdateRollbackFailed => TextColor::Red,
+   //         StackStatus::UpdateRollbackInProgress => TextColor::Yellow,
+   //         _ => TextColor::Red,
+   //     }
+   // }
 
     pub fn from_change_set_status(change_set_status: &ChangeSetStatus) -> Self {
         match change_set_status {
@@ -128,6 +127,7 @@ macro_rules! str_repeat {
             out[i] = A[a];
             i += 1;
         }
+        #[allow(clippy::transmute_bytes_to_str)]
         unsafe { std::mem::transmute::<&[u8], &str>(&out) }
     }};
 }
@@ -153,17 +153,6 @@ macro_rules! pprintln {
     ($lock:expr, $fmt_str:literal, $identation:expr, $color:expr, $($args:tt)* ) => {{
         let str = pformat!($fmt_str, $identation, $color, $($args)*);
         writeln!($lock,"{}", str).unwrap()
-    }};
-}
-
-macro_rules! pprint {
-    ($lock:expr, $fmt_str:literal, $identation:expr, $color:expr) => {{
-        let str = pformat($fmt_str, $identation, $color);
-        write!($lock,"{}", str).unwrap()
-    }};
-    ($lock:expr, $fmt_str:literal, $identation:expr, $color:expr, $($args:tt)* ) => {{
-        let str = pformat($fmt_str, $identation, $color, $($args)*);
-        write!($lock,"{}", str).unwrap()
     }};
 }
 
@@ -201,7 +190,7 @@ impl Display {
                 lock,
                 "Change set status: {status:?}",
                 0,
-                TextColor::from_change_set_status(&status)
+                TextColor::from_change_set_status(status)
             )
         }
 
@@ -248,18 +237,19 @@ impl Display {
                     );
                 }
 
-                if let Some(scope) = rc.scope.as_ref() {
-                    let scope = scope
-                        .into_iter()
+                if !rc.scope().is_empty() {
+                    let scope = &rc
+                        .scope()
+                        .iter()
                         .map(|s| format!("{s:?}"))
                         .collect::<Vec<String>>()
                         .join(", ");
                     pprintln!(lock, "Change Scope: {scope}", 4, TextColor::Default);
                 }
 
-                if let Some(details) = rc.details.as_ref() {
+                if !rc.details().is_empty() {
                     pprintln!(lock, "Changed Properties", 4, TextColor::Default);
-                    for detail in details {
+                    for detail in rc.details() {
                         if let Some(target) = detail.target() {
                             pprintln!(
                                 lock,

@@ -1,6 +1,6 @@
-use anyhow::{anyhow, bail, Context};
+use anyhow::{bail, Context};
 
-use aws_sdk_cloudformation::types::{ChangeSetStatus, ChangeSetType, ResourceStatus, StackStatus};
+use aws_sdk_cloudformation::types::{ChangeSetStatus, ChangeSetType, StackStatus};
 
 use std::{
     path::PathBuf,
@@ -78,6 +78,10 @@ impl UpCommand {
             StackStatus::CreateComplete | StackStatus::UpdateComplete => {
                 info!("Up compleated successfully!")
             }
+            StackStatus::ReviewInProgress => {
+                self.clean_up_empty_stack().await?;
+                info!("Up aborted!")
+            }
             _ => {
                 tracing::error!("Up failed with status: {op_status:?}");
                 let events = self
@@ -123,19 +127,19 @@ impl UpCommand {
             .await?;
         let change_set_id = change_set.id().context("Empty change set id")?;
         self.client
-            .wait_until_change_set_op_in_progress(&change_set_id, self.pool_interval)
+            .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
             .await?;
         let change_set_description = self.client.describe_change_set(change_set_id).await?;
         self.display.print_change_set(&change_set_description);
 
         if self.display.ask_confirm("Do you want to continue?") {
             self.client.execute_change_set(change_set_id).await?;
+            self.client
+                .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
+                .await?;
         } else {
             self.client.delete_change_set(change_set_id).await?;
         }
-        self.client
-            .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
-            .await?;
 
         Ok(())
     }
@@ -146,7 +150,7 @@ impl UpCommand {
             self.stack
         );
         info!("Re-create stack {}...", self.stack);
-        self.client.delete(&self.stack).await?;
+        self.client.delete_stack(&self.stack).await?;
         let _ = self
             .client
             .wait_until_stack_op_in_progress(&self.stack, self.pool_interval)
@@ -158,45 +162,56 @@ impl UpCommand {
 
     async fn continue_pending_change_set(&self) -> anyhow::Result<()> {
         print!("Found a pending change set:");
-        let pending_change_set = self
-            .client
-            .pending_change_set(&self.stack)
-            .await?
-            .ok_or(anyhow!("Pending change set not found"))?;
+        let pending_change_set = self.client.pending_change_set(&self.stack).await?;
 
-        let change_set_id = pending_change_set
-            .change_set_id
-            .as_deref()
-            .context("Empty change set id")?;
-        let pending_change_set_description = self.client.describe_change_set(change_set_id).await?;
-        self.display
-            .print_change_set(&pending_change_set_description);
-        if self
-            .display
-            .ask_confirm("Do you want to apply this change set?")
-        {
-            self.client.execute_change_set(change_set_id).await?;
-            self.client
-                .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
-                .await?;
-        } else if self
-            .display
-            .ask_confirm("Do you want to create a new change set?")
-        {
-            self.client.delete_change_set(change_set_id).await?;
-            let (status, reason) = self
-                .client
-                .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
-                .await?;
-            if status == ChangeSetStatus::DeleteComplete {
-                self.create_or_update(ChangeSetType::Update).await?;
-            } else {
-                bail!(
-                    "Unable to delete the change set {}: {}",
-                    change_set_id,
-                    reason
-                );
+        if let Some(pending_change_set) = pending_change_set {
+            let change_set_id = pending_change_set
+                .change_set_id
+                .as_deref()
+                .context("Empty change set id")?;
+            let pending_change_set_description =
+                self.client.describe_change_set(change_set_id).await?;
+            self.display
+                .print_change_set(&pending_change_set_description);
+            if self
+                .display
+                .ask_confirm("Do you want to apply this change set?")
+            {
+                self.client.execute_change_set(change_set_id).await?;
+                self.client
+                    .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
+                    .await?;
+            } else if self
+                .display
+                .ask_confirm("Do you want to create a new change set?")
+            {
+                self.client.delete_change_set(change_set_id).await?;
+                let (status, reason) = self
+                    .client
+                    .wait_until_change_set_op_in_progress(change_set_id, self.pool_interval)
+                    .await?;
+                if status == ChangeSetStatus::DeleteComplete {
+                    self.create_or_update(ChangeSetType::Update).await?;
+                } else {
+                    bail!(
+                        "Unable to delete the change set {}: {}",
+                        change_set_id,
+                        reason
+                    );
+                }
             }
+        } else {
+            self.create_or_update(ChangeSetType::Create).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn clean_up_empty_stack(&self) -> anyhow::Result<()> {
+        let pending_change_set = self.client.pending_change_set(&self.stack).await?;
+
+        if pending_change_set.is_none() {
+            self.client.delete_stack(&self.stack).await?;
         }
 
         Ok(())

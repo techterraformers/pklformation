@@ -24,7 +24,7 @@ enum Commands {
         stack: String,
         #[arg(short, long)]
         template: PathBuf,
-        #[arg(short, long, default_value = "30", value_parser = parse_duration)]
+        #[arg(short, long, default_value = "5", value_parser = parse_duration)]
         pool_interval: Duration,
     },
 
