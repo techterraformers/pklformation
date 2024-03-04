@@ -6,8 +6,7 @@ pklformation leverages the capabilities of Pkl, a language designed for simplici
 
 ## Features
 * Create AWS CloudFormation templates using the Pkl language.
-* Simplify template creation with Pkl's clean and concise syntax.
-* Utilize variables, functions, and other PKL features to enhance productivity.
+* Utilize variables, functions, and other Pkl features to enhance productivity.
 * Seamlessly integrate PKLFormation into your AWS CloudFormation workflow.
 
 ## Requirements 
