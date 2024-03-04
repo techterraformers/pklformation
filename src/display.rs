@@ -1,6 +1,9 @@
 use aws_sdk_cloudformation::{
     operation::describe_change_set::DescribeChangeSetOutput,
-    types::{ChangeAction, ChangeSetStatus, Replacement, ResourceStatus, StackEvent, StackStatus},
+    types::{
+        ChangeAction, ChangeSetStatus, Replacement, RequiresRecreation, ResourceStatus, StackEvent,
+        StackStatus,
+    },
 };
 use colored::Colorize;
 use dialoguer::Confirm;
@@ -10,87 +13,164 @@ const UNKNOWN_RESOURCE_TYPE: &str = "UNKNOW RESOURCE TYPE";
 const UNKNOWN_REASON: &str = "UNKNOW REASON";
 const UNKNOWN_RESOURCE_LOGICAL_ID: &str = "UNKNOW RESOURCE LOGICAL ID";
 
+struct ChangeActionSimbol(ChangeAction);
+
+impl std::fmt::Display for ChangeActionSimbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            ChangeAction::Add => write!(f, "+"),
+            ChangeAction::Dynamic => write!(f, "~/+"),
+            ChangeAction::Modify => write!(f, "~"),
+            ChangeAction::Remove => write!(f, "-"),
+            _ => write!(f, "?"),
+        }
+    }
+}
+
+enum TextColor {
+    Green,
+    Yellow,
+    Red,
+    Purple,
+    Default,
+}
+
+impl TextColor {
+    pub fn from_stack_status(stack_status: &StackStatus) -> Self {
+        match stack_status {
+            StackStatus::CreateComplete => TextColor::Green,
+            StackStatus::CreateFailed => TextColor::Red,
+            StackStatus::CreateInProgress => TextColor::Yellow,
+            StackStatus::DeleteComplete => TextColor::Green,
+            StackStatus::DeleteFailed => TextColor::Red,
+            StackStatus::DeleteInProgress => TextColor::Yellow,
+            StackStatus::ImportComplete => TextColor::Green,
+            StackStatus::ImportInProgress => TextColor::Yellow,
+            StackStatus::ImportRollbackComplete => TextColor::Green,
+            StackStatus::ImportRollbackFailed => TextColor::Red,
+            StackStatus::ImportRollbackInProgress => TextColor::Yellow,
+            StackStatus::ReviewInProgress => TextColor::Yellow,
+            StackStatus::RollbackComplete => TextColor::Green,
+            StackStatus::RollbackFailed => TextColor::Red,
+            StackStatus::RollbackInProgress => TextColor::Yellow,
+            StackStatus::UpdateComplete => TextColor::Green,
+            StackStatus::UpdateCompleteCleanupInProgress => TextColor::Green,
+            StackStatus::UpdateFailed => TextColor::Red,
+            StackStatus::UpdateInProgress => TextColor::Yellow,
+            StackStatus::UpdateRollbackComplete => TextColor::Green,
+            StackStatus::UpdateRollbackCompleteCleanupInProgress => TextColor::Yellow,
+            StackStatus::UpdateRollbackFailed => TextColor::Red,
+            StackStatus::UpdateRollbackInProgress => TextColor::Yellow,
+            _ => TextColor::Red,
+        }
+    }
+
+    pub fn from_change_set_status(change_set_status: &ChangeSetStatus) -> Self {
+        match change_set_status {
+            ChangeSetStatus::CreateComplete => TextColor::Green,
+            ChangeSetStatus::CreateInProgress => TextColor::Yellow,
+            ChangeSetStatus::CreatePending => TextColor::Yellow,
+            ChangeSetStatus::DeleteComplete => TextColor::Green,
+            ChangeSetStatus::DeleteFailed => TextColor::Red,
+            ChangeSetStatus::DeleteInProgress => TextColor::Yellow,
+            ChangeSetStatus::DeletePending => TextColor::Yellow,
+            ChangeSetStatus::Failed => TextColor::Red,
+            _ => TextColor::Red,
+        }
+    }
+
+    pub fn from_change_action(change_action: &ChangeAction) -> Self {
+        match change_action {
+            ChangeAction::Add => TextColor::Green,
+            ChangeAction::Dynamic => TextColor::Purple,
+            ChangeAction::Import => TextColor::Green,
+            ChangeAction::Modify => TextColor::Yellow,
+            ChangeAction::Remove => TextColor::Red,
+            _ => TextColor::Red,
+        }
+    }
+
+    pub fn from_replacement(replacement: &Replacement) -> Self {
+        match replacement {
+            Replacement::Conditional => TextColor::Yellow,
+            Replacement::False => TextColor::Green,
+            Replacement::True => TextColor::Red,
+            _ => TextColor::Red,
+        }
+    }
+
+    pub fn from_requires_recreation(requires_recreation: &RequiresRecreation) -> Self {
+        match requires_recreation {
+            RequiresRecreation::Always => TextColor::Red,
+            RequiresRecreation::Conditionally => TextColor::Yellow,
+            RequiresRecreation::Never => TextColor::Green,
+            _ => TextColor::Red,
+        }
+    }
+    pub fn colorize(&self, str: &str) -> String {
+        match self {
+            TextColor::Green => str.green().to_string(),
+            TextColor::Yellow => str.yellow().to_string(),
+            TextColor::Red => str.red().to_string(),
+            TextColor::Purple => str.purple().to_string(),
+            TextColor::Default => str.to_string(),
+        }
+    }
+}
+
+macro_rules! str_repeat {
+    ($str:literal, $times:literal) => {{
+        const A: &[u8] = unsafe { std::mem::transmute::<&str, &[u8]>($str) };
+        let mut out = [A[0]; { A.len() * $times }];
+        let mut i = 0;
+        while i < out.len() {
+            let a = i % A.len();
+            out[i] = A[a];
+            i += 1;
+        }
+        unsafe { std::mem::transmute::<&[u8], &str>(&out) }
+    }};
+}
+
+macro_rules! pformat {
+    ($fmt_str:literal, $identation:expr, $color:expr) => {{
+        let ident = str_repeat!(" ", $identation);
+        let str_format = format!($fmt_str);
+        $color.colorize(&format!("{} {}", ident, str_format))
+    }};
+    ($fmt_str:literal, $identation:expr, $color:expr, $($args:tt)* ) => {{
+        let ident = str_repeat!(" ", $identation);
+        let str_format = format!($fmt_str, $($args)*);
+        $color.colorize(&format!("{} {}", ident, str_format))
+    }};
+}
+
+macro_rules! pprintln {
+    ($lock:expr, $fmt_str:literal, $identation:expr, $color:expr) => {{
+        let str = pformat!($fmt_str, $identation, $color);
+        writeln!($lock,"{}", str).unwrap()
+    }};
+    ($lock:expr, $fmt_str:literal, $identation:expr, $color:expr, $($args:tt)* ) => {{
+        let str = pformat!($fmt_str, $identation, $color, $($args)*);
+        writeln!($lock,"{}", str).unwrap()
+    }};
+}
+
+macro_rules! pprint {
+    ($lock:expr, $fmt_str:literal, $identation:expr, $color:expr) => {{
+        let str = pformat($fmt_str, $identation, $color);
+        write!($lock,"{}", str).unwrap()
+    }};
+    ($lock:expr, $fmt_str:literal, $identation:expr, $color:expr, $($args:tt)* ) => {{
+        let str = pformat($fmt_str, $identation, $color, $($args)*);
+        write!($lock,"{}", str).unwrap()
+    }};
+}
+
 pub struct Display {}
 impl Display {
     pub fn new() -> Self {
         Self {}
-    }
-
-    pub fn colorize_by_stack_status(self, stack_status: &StackStatus, str: &str) -> String {
-        match stack_status {
-            StackStatus::CreateComplete => str.green().to_string(),
-            StackStatus::CreateFailed => str.red().to_string(),
-            StackStatus::CreateInProgress => str.yellow().to_string(),
-            StackStatus::DeleteComplete => str.green().to_string(),
-            StackStatus::DeleteFailed => str.red().to_string(),
-            StackStatus::DeleteInProgress => str.yellow().to_string(),
-            StackStatus::ImportComplete => str.green().to_string(),
-            StackStatus::ImportInProgress => str.yellow().to_string(),
-            StackStatus::ImportRollbackComplete => str.green().to_string(),
-            StackStatus::ImportRollbackFailed => str.red().to_string(),
-            StackStatus::ImportRollbackInProgress => str.yellow().to_string(),
-            StackStatus::ReviewInProgress => str.yellow().to_string(),
-            StackStatus::RollbackComplete => str.green().to_string(),
-            StackStatus::RollbackFailed => str.red().to_string(),
-            StackStatus::RollbackInProgress => str.yellow().to_string(),
-            StackStatus::UpdateComplete => str.green().to_string(),
-            StackStatus::UpdateCompleteCleanupInProgress => str.green().to_string(),
-            StackStatus::UpdateFailed => str.red().to_string(),
-            StackStatus::UpdateInProgress => str.yellow().to_string(),
-            StackStatus::UpdateRollbackComplete => str.green().to_string(),
-            StackStatus::UpdateRollbackCompleteCleanupInProgress => str.yellow().to_string(),
-            StackStatus::UpdateRollbackFailed => str.red().to_string(),
-            StackStatus::UpdateRollbackInProgress => str.yellow().to_string(),
-            _ => str.red().to_string(),
-        }
-    }
-
-    pub fn colorize_by_change_set_status(
-        &self,
-        change_set_status: &ChangeSetStatus,
-        str: String,
-    ) -> String {
-        match change_set_status {
-            ChangeSetStatus::CreateComplete => str.green().to_string(),
-            ChangeSetStatus::CreateInProgress => str.yellow().to_string(),
-            ChangeSetStatus::CreatePending => str.yellow().to_string(),
-            ChangeSetStatus::DeleteComplete => str.green().to_string(),
-            ChangeSetStatus::DeleteFailed => str.red().to_string(),
-            ChangeSetStatus::DeleteInProgress => str.yellow().to_string(),
-            ChangeSetStatus::DeletePending => str.yellow().to_string(),
-            ChangeSetStatus::Failed => str.red().to_string(),
-            _ => str.red().to_string(),
-        }
-    }
-
-    pub fn colorize_by_change_action(&self, change_action: &ChangeAction, str: String) -> String {
-        match change_action {
-            ChangeAction::Add => str.green().to_string(),
-            ChangeAction::Dynamic => str.purple().to_string(),
-            ChangeAction::Import => str.green().to_string(),
-            ChangeAction::Modify => str.yellow().to_string(),
-            ChangeAction::Remove => str.red().to_string(),
-            _ => str.red().to_string(),
-        }
-    }
-
-    pub fn colorize_by_replacement(&self, replacement: &Replacement, str: String) -> String {
-        match replacement {
-            Replacement::Conditional => str.yellow().to_string(),
-            Replacement::False => str.green().to_string(),
-            Replacement::True => str.red().to_string(),
-            _ => str.red().to_string(),
-        }
-    }
-
-    pub fn change_action_simbol(&self, action: &ChangeAction) -> &'static str {
-        match action {
-            ChangeAction::Add => "+",
-            ChangeAction::Dynamic => "~/+",
-            ChangeAction::Modify => "~",
-            ChangeAction::Remove => "-",
-            _ => "?",
-        }
     }
 
     pub fn ask_confirm(&self, msg: &str) -> bool {
@@ -105,26 +185,24 @@ impl Display {
         let stdout = std::io::stdout();
         let mut lock = stdout.lock();
 
-        writeln!(
+        pprintln!(
             lock,
             "Change set: {}",
+            0,
+            TextColor::Default,
             change_set
                 .change_set_name
                 .as_deref()
                 .unwrap_or("UNKOWN CHANGE SET")
-        )
-        .unwrap();
+        );
 
         if let Some(status) = change_set.status.as_ref() {
-            writeln!(
+            pprintln!(
                 lock,
-                "{}",
-                self.colorize_by_change_set_status(
-                    &status,
-                    format!("Change set status: {status:?}")
-                )
+                "Change set status: {status:?}",
+                0,
+                TextColor::from_change_set_status(&status)
             )
-            .unwrap();
         }
 
         change_set
@@ -132,39 +210,96 @@ impl Display {
             .iter()
             .filter_map(|c| c.resource_change.as_ref())
             .for_each(|rc| {
-                let header = format!(
-                    "{} ({})",
+                pprintln!(
+                    lock,
+                    "{} {} ({})",
+                    2,
+                    TextColor::from_change_action(rc.action().unwrap()),
+                    ChangeActionSimbol(rc.action().unwrap().clone()),
                     rc.logical_resource_id
                         .as_deref()
                         .unwrap_or(UNKNOWN_RESOURCE_LOGICAL_ID),
                     rc.resource_type.as_deref().unwrap_or(UNKNOWN_RESOURCE_TYPE),
                 );
 
-                writeln!(
+                pprintln!(
                     lock,
-                    "{} {}",
-                    self.change_action_simbol(rc.action().unwrap()),
-                    self.colorize_by_change_action(rc.action().unwrap(), format!("+ {}", header))
-                )
-                .unwrap();
-
-                writeln!(
-                    lock,
-                    "Action: {}",
-                    self.colorize_by_change_action(
-                        rc.action().unwrap(),
-                        format!("{:?}", rc.action().unwrap())
-                    )
-                )
-                .unwrap();
+                    "Action: {:?}",
+                    4,
+                    TextColor::from_change_action(rc.action().unwrap()),
+                    rc.action().unwrap()
+                );
 
                 if let Some(replacement) = rc.replacement() {
-                    writeln!(
+                    pprintln!(
                         lock,
-                        "Replacement: {}",
-                        self.colorize_by_replacement(replacement, format!("{:?}", replacement))
-                    )
-                    .unwrap();
+                        "Replacement: {replacement:?}",
+                        4,
+                        TextColor::from_replacement(replacement)
+                    );
+                }
+
+                if let Some(change_res_id) = rc.change_set_id() {
+                    pprintln!(
+                        lock,
+                        "Physical Resource: {change_res_id}",
+                        4,
+                        TextColor::Default
+                    );
+                }
+
+                if let Some(scope) = rc.scope.as_ref() {
+                    let scope = scope
+                        .into_iter()
+                        .map(|s| format!("{s:?}"))
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    pprintln!(lock, "Change Scope: {scope}", 4, TextColor::Default);
+                }
+
+                if let Some(details) = rc.details.as_ref() {
+                    pprintln!(lock, "Changed Properties", 4, TextColor::Default);
+                    for detail in details {
+                        if let Some(target) = detail.target() {
+                            pprintln!(
+                                lock,
+                                "{} {}",
+                                6,
+                                TextColor::Default,
+                                target
+                                    .attribute()
+                                    .map(|a| format! {"{a:?}"})
+                                    .unwrap_or_else(|| "".to_string()),
+                                target.name().unwrap_or_default()
+                            );
+                            if let Some(requires_recreation) = target.requires_recreation() {
+                                pprintln!(
+                                    lock,
+                                    "{:?}",
+                                    8,
+                                    TextColor::from_requires_recreation(requires_recreation),
+                                    requires_recreation
+                                )
+                            }
+                        }
+
+                        if let Some(causing_eentity) = detail.causing_entity() {
+                            pprintln!(
+                                lock,
+                                "Causing entity: {causing_eentity}",
+                                8,
+                                TextColor::Default
+                            );
+                        }
+                        if let Some(change_source) = detail.change_source() {
+                            pprintln!(
+                                lock,
+                                "Causing entity: {change_source:?}",
+                                8,
+                                TextColor::Default
+                            );
+                        }
+                    }
                 }
             })
     }
@@ -180,31 +315,30 @@ impl Display {
                 )
             })
             .for_each(|error| {
-                writeln!(
+                pprintln!(
                     lock,
                     "{}: {}",
-                    error.resource_type().unwrap_or(UNKNOWN_RESOURCE_TYPE).red(),
+                    0,
+                    TextColor::Red,
+                    error.resource_type().unwrap_or(UNKNOWN_RESOURCE_TYPE),
                     error
                         .logical_resource_id()
                         .unwrap_or(UNKNOWN_RESOURCE_LOGICAL_ID)
-                        .red()
-                )
-                .unwrap();
-                writeln!(
+                );
+                pprintln!(
                     lock,
                     "reason: {}",
-                    error
-                        .resource_status_reason()
-                        .unwrap_or(UNKNOWN_REASON)
-                        .red(),
-                )
-                .unwrap();
-                writeln!(
+                    0,
+                    TextColor::Red,
+                    error.resource_status_reason().unwrap_or(UNKNOWN_REASON)
+                );
+                pprintln!(
                     lock,
                     "properties: {}",
-                    error.resource_properties().unwrap_or("").red(),
-                )
-                .unwrap();
+                    0,
+                    TextColor::Red,
+                    error.resource_properties().unwrap_or(""),
+                );
             });
     }
 }
