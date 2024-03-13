@@ -1,12 +1,16 @@
 use aws_sdk_cloudformation::{
-    operation::describe_change_set::DescribeChangeSetOutput,
+    operation::{
+        describe_change_set::DescribeChangeSetOutput,
+        list_stack_resources::ListStackResourcesOutput,
+    },
     types::{
-        ChangeAction, ChangeSetStatus, Replacement, RequiresRecreation, ResourceStatus, StackEvent,
+        ChangeAction, ChangeSetStatus, Parameter, Replacement, RequiresRecreation, ResourceStatus,
+        Stack, StackEvent, StackStatus,
     },
 };
 use colored::Colorize;
 use dialoguer::Confirm;
-use std::io::Write;
+use std::{any::Any, io::Write};
 
 const UNKNOWN_RESOURCE_TYPE: &str = "UNKNOW RESOURCE TYPE";
 const UNKNOWN_REASON: &str = "UNKNOW REASON";
@@ -35,34 +39,34 @@ enum TextColor {
 }
 
 impl TextColor {
-   // pub fn from_stack_status(stack_status: &StackStatus) -> Self {
-   //     match stack_status {
-   //         StackStatus::CreateComplete => TextColor::Green,
-   //         StackStatus::CreateFailed => TextColor::Red,
-   //         StackStatus::CreateInProgress => TextColor::Yellow,
-   //         StackStatus::DeleteComplete => TextColor::Green,
-   //         StackStatus::DeleteFailed => TextColor::Red,
-   //         StackStatus::DeleteInProgress => TextColor::Yellow,
-   //         StackStatus::ImportComplete => TextColor::Green,
-   //         StackStatus::ImportInProgress => TextColor::Yellow,
-   //         StackStatus::ImportRollbackComplete => TextColor::Green,
-   //         StackStatus::ImportRollbackFailed => TextColor::Red,
-   //         StackStatus::ImportRollbackInProgress => TextColor::Yellow,
-   //         StackStatus::ReviewInProgress => TextColor::Yellow,
-   //         StackStatus::RollbackComplete => TextColor::Green,
-   //         StackStatus::RollbackFailed => TextColor::Red,
-   //         StackStatus::RollbackInProgress => TextColor::Yellow,
-   //         StackStatus::UpdateComplete => TextColor::Green,
-   //         StackStatus::UpdateCompleteCleanupInProgress => TextColor::Green,
-   //         StackStatus::UpdateFailed => TextColor::Red,
-   //         StackStatus::UpdateInProgress => TextColor::Yellow,
-   //         StackStatus::UpdateRollbackComplete => TextColor::Green,
-   //         StackStatus::UpdateRollbackCompleteCleanupInProgress => TextColor::Yellow,
-   //         StackStatus::UpdateRollbackFailed => TextColor::Red,
-   //         StackStatus::UpdateRollbackInProgress => TextColor::Yellow,
-   //         _ => TextColor::Red,
-   //     }
-   // }
+    pub fn from_stack_status(stack_status: &StackStatus) -> Self {
+        match stack_status {
+            StackStatus::CreateComplete => TextColor::Green,
+            StackStatus::CreateFailed => TextColor::Red,
+            StackStatus::CreateInProgress => TextColor::Yellow,
+            StackStatus::DeleteComplete => TextColor::Green,
+            StackStatus::DeleteFailed => TextColor::Red,
+            StackStatus::DeleteInProgress => TextColor::Yellow,
+            StackStatus::ImportComplete => TextColor::Green,
+            StackStatus::ImportInProgress => TextColor::Yellow,
+            StackStatus::ImportRollbackComplete => TextColor::Green,
+            StackStatus::ImportRollbackFailed => TextColor::Red,
+            StackStatus::ImportRollbackInProgress => TextColor::Yellow,
+            StackStatus::ReviewInProgress => TextColor::Yellow,
+            StackStatus::RollbackComplete => TextColor::Green,
+            StackStatus::RollbackFailed => TextColor::Red,
+            StackStatus::RollbackInProgress => TextColor::Yellow,
+            StackStatus::UpdateComplete => TextColor::Green,
+            StackStatus::UpdateCompleteCleanupInProgress => TextColor::Green,
+            StackStatus::UpdateFailed => TextColor::Red,
+            StackStatus::UpdateInProgress => TextColor::Yellow,
+            StackStatus::UpdateRollbackComplete => TextColor::Green,
+            StackStatus::UpdateRollbackCompleteCleanupInProgress => TextColor::Yellow,
+            StackStatus::UpdateRollbackFailed => TextColor::Red,
+            StackStatus::UpdateRollbackInProgress => TextColor::Yellow,
+            _ => TextColor::Red,
+        }
+    }
 
     pub fn from_change_set_status(change_set_status: &ChangeSetStatus) -> Self {
         match change_set_status {
@@ -128,7 +132,9 @@ macro_rules! str_repeat {
             i += 1;
         }
         #[allow(clippy::transmute_bytes_to_str)]
-        unsafe { std::mem::transmute::<&[u8], &str>(&out) }
+        unsafe {
+            std::mem::transmute::<&[u8], &str>(&out)
+        }
     }};
 }
 
@@ -292,6 +298,76 @@ impl Display {
                     }
                 }
             })
+    }
+
+    pub fn print_stack(&self, stack: &Stack) {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        pprintln!(
+            lock,
+            "Stack name: {}",
+            0,
+            TextColor::Default,
+            stack.stack_name().unwrap_or_default()
+        );
+        if let Some(parent) = stack.parent_id() {
+            pprintln!(lock, "Parent: {parent}", 0, TextColor::Default);
+        }
+        if let Some(description) = stack.description() {
+            pprintln!(lock, "Description: {description}", 0, TextColor::Default);
+        }
+        if let Some(creation_date) = stack.creation_time() {
+            pprintln!(
+                lock,
+                "Creation time: {creation_date}",
+                0,
+                TextColor::Default
+            );
+        }
+        if let Some(last_updated_time) = stack.last_updated_time() {
+            pprintln!(
+                lock,
+                "Last update time: {last_updated_time}",
+                0,
+                TextColor::Default
+            );
+        }
+        if let Some(stack_status) = stack.stack_status() {
+            let color = TextColor::from_stack_status(stack_status);
+            pprintln!(lock, "Status: {stack_status:?}", 0, color);
+            if let Some(stack_status_reason) = stack.stack_status_reason() {
+                pprintln!(lock, "Status reason: {stack_status_reason}", 0, color);
+            }
+        }
+
+        if !stack.parameters().is_empty() {
+            pprintln!(lock, "Parameters:", 0, TextColor::Default);
+            for Parameter {
+                parameter_key: key,
+                parameter_value: value,
+                ..
+            } in stack.parameters()
+            {
+                let key = key.clone().unwrap_or_default();
+                let value = value.clone().unwrap_or_default();
+                pprintln!(lock, "{key}:{value}", 0, TextColor::Default);
+            }
+        }
+    }
+
+    pub fn print_stack_resources(&self, resources: &ListStackResourcesOutput) {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+
+        for resource in resources.stack_resource_summaries() {
+            if let Some(logical_id) = resource.physical_resource_id() {
+                pprintln!(lock, "{logical_id} ({:?})", 0, TextColor::Default, resource.type_id());
+            }
+
+            if let Some(physical_id) = resource.physical_resource_id() {
+                pprintln!(lock, "Physical ID: {physical_id}", 0, TextColor::Default);
+            }
+        }
     }
 
     pub fn print_resources_errors(&self, events: impl Iterator<Item = StackEvent>) {

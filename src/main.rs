@@ -4,7 +4,8 @@ mod display;
 
 use std::path::PathBuf;
 
-use crate::commands::up_command::UpCommand;
+use crate::commands::destroy::DestroyCommand;
+use crate::commands::up::UpCommand;
 
 use clap::{Parser, Subcommand};
 use std::time::Duration;
@@ -13,6 +14,8 @@ use tracing::{span, Level};
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    #[arg(short, long, default_value = "5", value_parser = parse_duration)]
+    pool_interval: Duration,
     #[command(subcommand)]
     command: Commands,
 }
@@ -24,8 +27,6 @@ enum Commands {
         stack: String,
         #[arg(short, long)]
         template: PathBuf,
-        #[arg(short, long, default_value = "5", value_parser = parse_duration)]
-        pool_interval: Duration,
     },
 
     Preview {
@@ -34,6 +35,7 @@ enum Commands {
     },
 
     Destroy {
+        #[arg(short, long)]
         stack: String,
     },
 
@@ -57,11 +59,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
     match &cli.command {
-        Commands::Up {
-            stack,
-            template,
-            pool_interval,
-        } => {
+        Commands::Up { stack, template } => {
             let span = span!(
                 Level::INFO,
                 "up",
@@ -73,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
                 client,
                 stack.to_string(),
                 template.to_path_buf(),
-                pool_interval.to_owned(),
+                cli.pool_interval.to_owned(),
             )
             .run()
             .await?;
@@ -82,7 +80,11 @@ async fn main() -> anyhow::Result<()> {
             span!(Level::DEBUG, "preview", stack = stack);
         }
         Commands::Destroy { stack } => {
-            span!(Level::DEBUG, "destroy", stack = stack);
+            let span = span!(Level::DEBUG, "destroy", stack = stack);
+            let _enter = span.enter();
+            DestroyCommand::new(client, stack.to_string(), cli.pool_interval.to_owned())
+                .run()
+                .await?;
         }
         Commands::List {} => {
             span!(Level::DEBUG, "list");

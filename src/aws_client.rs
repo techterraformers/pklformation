@@ -5,8 +5,12 @@ use aws_config::BehaviorVersion;
 use aws_sdk_cloudformation::{
     operation::{
         create_change_set::CreateChangeSetOutput, describe_change_set::DescribeChangeSetOutput,
+        list_stack_resources::ListStackResourcesOutput,
     },
-    types::{ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, StackEvent, StackStatus},
+    types::{
+        ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, Stack, StackEvent,
+        StackStatus,
+    },
     Client,
 };
 use chrono::Utc;
@@ -68,7 +72,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn stack_status(&self, stack_name: &str) -> anyhow::Result<(StackStatus, String)> {
+    pub async fn describe_stack(&self, stack_name: &str) -> anyhow::Result<Stack> {
         let describe_stacks_output = self
             .inner
             .describe_stacks()
@@ -76,8 +80,24 @@ impl AwsClient {
             .send()
             .await?;
         let stacks = describe_stacks_output.stacks.context("No stacks list")?;
-        let stack = stacks.first().context("Empty stacks list")?;
+        stacks.first().cloned().context("Empty stacks list")
+    }
 
+    pub async fn list_stack_resources(
+        &self,
+        stack_name: &str,
+    ) -> anyhow::Result<ListStackResourcesOutput> {
+        let list_stack_resources_output = self
+            .inner
+            .list_stack_resources()
+            .stack_name(stack_name)
+            .send()
+            .await?;
+        Ok(list_stack_resources_output)
+    }
+
+    pub async fn stack_status(&self, stack_name: &str) -> anyhow::Result<(StackStatus, String)> {
+        let stack = self.describe_stack(stack_name).await?;
         Ok((
             stack
                 .stack_status
@@ -128,10 +148,7 @@ impl AwsClient {
         Ok(())
     }
 
-    pub async fn describe_stack_events(
-        &self,
-        stack: &str,
-    ) -> anyhow::Result<Vec<StackEvent>> {
+    pub async fn describe_stack_events(&self, stack: &str) -> anyhow::Result<Vec<StackEvent>> {
         info!("Describe stack events {stack}!",);
         let stack_events: Vec<_> = self
             .inner
@@ -140,7 +157,7 @@ impl AwsClient {
             .into_paginator()
             .items()
             .send()
-            .collect::<Result<Vec<_>,_>>()
+            .collect::<Result<Vec<_>, _>>()
             .await?;
 
         debug!("Describe stack events result: {stack_events:?}");
@@ -191,17 +208,23 @@ impl AwsClient {
         stack_name: &str,
         pool_interval: Duration,
     ) -> anyhow::Result<(StackStatus, String)> {
-        let (status, reason) = self.stack_status(stack_name).await?;
+        let (mut status, mut reason) = self.stack_status(stack_name).await?;
 
         if Self::stack_op_in_progres(&status) {
             let mut sp = Spinner::new(Spinners::Dots9, format!("Waiting for {status:?}"));
             loop {
-                let (status, reason) = self.stack_status(stack_name).await?;
-                thread::sleep(pool_interval);
                 if !Self::stack_op_in_progres(&status) {
                     sp.stop();
                     return Ok((status, reason));
                 }
+                thread::sleep(pool_interval);
+                if let Ok((new_status, new_reason)) = self.stack_status(stack_name).await {
+                    status = new_status;
+                    reason = new_reason
+                } else {
+                    // return last know status
+                    return Ok((status, reason));
+                };
             }
         }
 
