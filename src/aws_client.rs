@@ -5,11 +5,11 @@ use aws_config::BehaviorVersion;
 use aws_sdk_cloudformation::{
     operation::{
         create_change_set::CreateChangeSetOutput, describe_change_set::DescribeChangeSetOutput,
-        list_stack_resources::ListStackResourcesOutput,
+        list_stack_resources::ListStackResourcesOutput, list_stacks,
     },
     types::{
         ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, Stack, StackEvent,
-        StackStatus,
+        StackStatus, StackSummary,
     },
     Client,
 };
@@ -94,6 +94,21 @@ impl AwsClient {
             .send()
             .await?;
         Ok(list_stack_resources_output)
+    }
+
+    pub async fn list_stacks(
+        &self,
+        status_filter: &[StackStatus],
+    ) -> anyhow::Result<Vec<StackSummary>> {
+        let mut list_stacks_request_builder = self.inner.list_stacks();
+
+        for status in status_filter {
+            list_stacks_request_builder =
+                list_stacks_request_builder.stack_status_filter(status.clone());
+        }
+
+        let list_stacks_output = list_stacks_request_builder.send().await?;
+        Ok(list_stacks_output.stack_summaries().to_vec())
     }
 
     pub async fn stack_status(&self, stack_name: &str) -> anyhow::Result<(StackStatus, String)> {

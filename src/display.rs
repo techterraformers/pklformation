@@ -5,12 +5,12 @@ use aws_sdk_cloudformation::{
     },
     types::{
         ChangeAction, ChangeSetStatus, Parameter, Replacement, RequiresRecreation, ResourceStatus,
-        Stack, StackEvent, StackStatus,
+        Stack, StackEvent, StackStatus, StackSummary,
     },
 };
 use colored::Colorize;
 use dialoguer::Confirm;
-use std::{any::Any, io::Write};
+use std::io::Write;
 
 const UNKNOWN_RESOURCE_TYPE: &str = "UNKNOW RESOURCE TYPE";
 const UNKNOWN_REASON: &str = "UNKNOW REASON";
@@ -110,6 +110,33 @@ impl TextColor {
             _ => TextColor::Red,
         }
     }
+
+    pub fn from_resource_status(resource_status: &ResourceStatus) -> Self {
+        match resource_status {
+            ResourceStatus::CreateComplete => TextColor::Green,
+            ResourceStatus::CreateFailed => TextColor::Red,
+            ResourceStatus::CreateInProgress => TextColor::Yellow,
+            ResourceStatus::DeleteComplete => TextColor::Green,
+            ResourceStatus::DeleteFailed => TextColor::Red,
+            ResourceStatus::DeleteInProgress => TextColor::Yellow,
+            ResourceStatus::ImportComplete => TextColor::Green,
+            ResourceStatus::ImportInProgress => TextColor::Yellow,
+            ResourceStatus::ImportRollbackComplete => TextColor::Green,
+            ResourceStatus::ImportRollbackFailed => TextColor::Red,
+            ResourceStatus::ImportRollbackInProgress => TextColor::Yellow,
+            ResourceStatus::RollbackComplete => TextColor::Green,
+            ResourceStatus::RollbackFailed => TextColor::Red,
+            ResourceStatus::RollbackInProgress => TextColor::Yellow,
+            ResourceStatus::UpdateComplete => TextColor::Green,
+            ResourceStatus::UpdateFailed => TextColor::Red,
+            ResourceStatus::UpdateInProgress => TextColor::Yellow,
+            ResourceStatus::UpdateRollbackComplete => TextColor::Green,
+            ResourceStatus::UpdateRollbackFailed => TextColor::Red,
+            ResourceStatus::UpdateRollbackInProgress => TextColor::Yellow,
+            _ => TextColor::Red,
+        }
+    }
+
     pub fn colorize(&self, str: &str) -> String {
         match self {
             TextColor::Green => str.green().to_string(),
@@ -300,6 +327,29 @@ impl Display {
             })
     }
 
+    pub fn print_stack_summaries(&self, stacks: &[StackSummary]) {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        for stack in stacks {
+            pprintln!(
+                lock,
+                "Stack name: {}",
+                0,
+                TextColor::Default,
+                stack.stack_name().unwrap_or_default(),
+            );
+
+            if let Some(status) = stack.stack_status() {
+                pprintln!(
+                    lock,
+                    "Status: {status:?}",
+                    1,
+                    TextColor::from_stack_status(status),
+                )
+            }
+        }
+    }
+
     pub fn print_stack(&self, stack: &Stack) {
         let stdout = std::io::stdout();
         let mut lock = stdout.lock();
@@ -358,14 +408,38 @@ impl Display {
     pub fn print_stack_resources(&self, resources: &ListStackResourcesOutput) {
         let stdout = std::io::stdout();
         let mut lock = stdout.lock();
-
+        pprintln!(lock, "Stack resources:", 0, TextColor::Default);
         for resource in resources.stack_resource_summaries() {
             if let Some(logical_id) = resource.physical_resource_id() {
-                pprintln!(lock, "{logical_id} ({:?})", 0, TextColor::Default, resource.type_id());
+                pprintln!(
+                    lock,
+                    "{logical_id} ({:?})",
+                    4,
+                    TextColor::Default,
+                    resource.resource_type().unwrap_or_default()
+                );
             }
 
             if let Some(physical_id) = resource.physical_resource_id() {
-                pprintln!(lock, "Physical ID: {physical_id}", 0, TextColor::Default);
+                pprintln!(lock, "Physical ID: {physical_id}", 6, TextColor::Default);
+            }
+
+            if let Some(last_updated_timestamp) = resource.last_updated_timestamp() {
+                pprintln!(
+                    lock,
+                    "Last updated timestamp: {last_updated_timestamp}",
+                    6,
+                    TextColor::Default
+                );
+            }
+
+            if let Some(resource_status) = resource.resource_status() {
+                pprintln!(
+                    lock,
+                    "Status: {resource_status:?}",
+                    6,
+                    TextColor::from_resource_status(resource_status)
+                );
             }
         }
     }

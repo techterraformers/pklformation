@@ -4,9 +4,12 @@ mod display;
 
 use std::path::PathBuf;
 
+use crate::commands::describe::DescribeCommand;
 use crate::commands::destroy::DestroyCommand;
+use crate::commands::list::ListCommand;
 use crate::commands::up::UpCommand;
 
+use aws_sdk_cloudformation::types::StackStatus;
 use clap::{Parser, Subcommand};
 use std::time::Duration;
 use tracing::{span, Level};
@@ -39,7 +42,10 @@ enum Commands {
         stack: String,
     },
 
-    List {},
+    List {
+        #[arg(short, long)]
+        status_filter: Option<Vec<StackStatus>>,
+    },
     Describe {
         #[arg(short, long)]
         stack: String,
@@ -86,11 +92,19 @@ async fn main() -> anyhow::Result<()> {
                 .run()
                 .await?;
         }
-        Commands::List {} => {
-            span!(Level::DEBUG, "list");
+        Commands::List { status_filter } => {
+            let span = span!(Level::DEBUG, "list");
+            let _entr = span.enter();
+            ListCommand::new(client, status_filter.clone())
+                .run()
+                .await?;
         }
         Commands::Describe { stack } => {
-            span!(Level::DEBUG, "describe", stack = stack);
+            let span = span!(Level::DEBUG, "describe", stack = stack);
+            let _enter = span.enter();
+            DescribeCommand::new(client, stack.to_string(), cli.pool_interval.to_owned())
+                .run()
+                .await?;
         }
     }
 
