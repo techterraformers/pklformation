@@ -5,7 +5,7 @@ use aws_config::BehaviorVersion;
 use aws_sdk_cloudformation::{
     operation::{
         create_change_set::CreateChangeSetOutput, describe_change_set::DescribeChangeSetOutput,
-        list_stack_resources::ListStackResourcesOutput, list_stacks,
+        list_stack_resources::ListStackResourcesOutput,
     },
     types::{
         ChangeSetStatus, ChangeSetSummary, ChangeSetType, ExecutionStatus, Stack, StackEvent,

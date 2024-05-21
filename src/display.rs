@@ -224,7 +224,15 @@ impl Display {
                 "Change set status: {status:?}",
                 0,
                 TextColor::from_change_set_status(status)
-            )
+            );
+            if let Some(status_reason) = change_set.status_reason.as_ref() {
+                pprintln!(
+                    lock,
+                    "reason: {status_reason:?}",
+                    1,
+                    TextColor::from_change_set_status(status)
+                )
+            }
         }
 
         change_set

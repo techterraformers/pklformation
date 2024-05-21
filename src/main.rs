@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::commands::describe::DescribeCommand;
 use crate::commands::destroy::DestroyCommand;
 use crate::commands::list::ListCommand;
+use crate::commands::preview::PreviewCommand;
 use crate::commands::up::UpCommand;
 
 use aws_sdk_cloudformation::types::StackStatus;
@@ -35,6 +36,8 @@ enum Commands {
     Preview {
         #[arg(short, long)]
         stack: String,
+        #[arg(short, long)]
+        template: PathBuf,
     },
 
     Destroy {
@@ -46,6 +49,7 @@ enum Commands {
         #[arg(short, long)]
         status_filter: Option<Vec<StackStatus>>,
     },
+
     Describe {
         #[arg(short, long)]
         stack: String,
@@ -82,8 +86,17 @@ async fn main() -> anyhow::Result<()> {
             .run()
             .await?;
         }
-        Commands::Preview { stack } => {
-            span!(Level::DEBUG, "preview", stack = stack);
+        Commands::Preview { stack, template } => {
+            let span = span!(Level::DEBUG, "preview", stack = stack);
+            let _enter = span.enter();
+            PreviewCommand::new(
+                client,
+                stack.to_string(),
+                template.to_path_buf(),
+                cli.pool_interval.to_owned(),
+            )
+            .run()
+            .await?;
         }
         Commands::Destroy { stack } => {
             let span = span!(Level::DEBUG, "destroy", stack = stack);

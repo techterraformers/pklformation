@@ -1,9 +1,5 @@
-use aws_sdk_cloudformation::types::StackStatus;
-
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{error, info};
-
 use crate::{aws_client::AwsClient, display::Display};
+use std::time::Duration;
 
 pub struct DescribeCommand {
     client: AwsClient,
